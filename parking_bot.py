@@ -1,9 +1,9 @@
 import os
-import telebot from telebot 
-import types
+import telebot
+from telebot import types
 import sqlite3
-import pandas as pd from dotenv 
-import load_dotenv
+import pandas as pd
+from dotenv import load_dotenv
 
 load_dotenv()
 T = os.getenv('BOT_TOKEN')
