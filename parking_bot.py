@@ -12,9 +12,10 @@ A = [int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
 bot = telebot.TeleBot(T)
 user_states = {}
 
-# Настройка пути строго по инструкции BotHost
 DATA_DIR = os.getenv('DATA_DIR', '/app/data')
 DB_PATH = os.path.join(DATA_DIR, 'parking.db')
+# Фиксированный путь для временного файла импорта
+IMPORT_FILE_PATH = os.path.join(DATA_DIR, 'temp_import.csv')
 
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -44,11 +45,12 @@ def approve_keyboard(p, ph, apt, uid):
     m.add(types.InlineKeyboardButton("✅ Одобрить", callback_data=f"y|{p}|{ph}|{apt}|{uid}"), types.InlineKeyboardButton("❌ Отклонить", callback_data=f"n|{uid}"))
     return m
 
-def import_keyboard(file_id):
+# Кнопки импорта теперь супер-короткие и безопасные для Telegram
+def import_keyboard():
     m = types.InlineKeyboardMarkup()
     m.add(
-        types.InlineKeyboardButton("🔄 Обнулить базу и записать", callback_data=f"imp_clear|{file_id}"),
-        types.InlineKeyboardButton("➕ Добавить новые записи", callback_data=f"imp_append|{file_id}")
+        types.InlineKeyboardButton("🔄 Обнулить и записать", callback_data="imp_clear"),
+        types.InlineKeyboardButton("➕ Добавить новые", callback_data="imp_append")
     )
     return m
 
@@ -87,18 +89,17 @@ def callback_inline(call):
         bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="❌ Заявка отклонена.")
         bot.send_message(r_id, "⚠️ Ваша заявка на парковку была отклонена.")
 
+    # Обработка импорта по короткой и стабильной команде
     elif act in ["imp_clear", "imp_append"]:
-        file_id = data
         bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="⏳ Начинаю импорт данных...")
         try:
-            file_info = bot.get_file(file_id)
-            downloaded_file = bot.download_file(file_info.file_path)
-            temp_filename = os.path.join(DATA_DIR, f"import_{call.from_user.id}.csv")
-            with open(temp_filename, 'wb') as f:
-                f.write(downloaded_file)
-            
-            df = pd.read_csv(temp_filename, dtype=str, encoding='utf-8-sig')
-            os.remove(temp_filename)
+            if not os.path.exists(IMPORT_FILE_PATH):
+                bot.send_message(call.message.chat.id, "❌ Файл импорта не найден на сервере. Попробуйте загрузить заново.")
+                return
+
+            df = pd.read_csv(IMPORT_FILE_PATH, dtype=str, encoding='utf-8-sig')
+            try: os.remove(IMPORT_FILE_PATH)
+            except Exception: pass
             
             c = sqlite3.connect(DB_PATH)
             cur = c.cursor()
@@ -145,21 +146,27 @@ def handle_document(msg):
         try:
             file_info = bot.get_file(msg.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
-            temp_check = os.path.join(DATA_DIR, f"check_{uid}.csv")
-            with open(temp_check, 'wb') as f:
-                f.write(downloaded_file)
-            df = pd.read_csv(temp_check, encoding='utf-8-sig')
-            os.remove(temp_check)
             
+            # Сразу сохраняем файл на диск под фиксированным именем
+            with open(IMPORT_FILE_PATH, 'wb') as f:
+                f.write(downloaded_file)
+                
+            # Короткий тест: проверяем структуру колонок
+            df = pd.read_csv(IMPORT_FILE_PATH, encoding='utf-8-sig', nrows=2)
             df.columns = [str(c).strip().capitalize() for c in df.columns]
             required_cols = ["Номер", "Телефон", "Квартира"]
             
             if not all(col in df.columns for col in required_cols):
                 bot.send_message(msg.chat.id, "❌ В файле должны быть колонки: 'Номер', 'Телефон', 'Квартира'.")
+                try: os.remove(IMPORT_FILE_PATH)
+                except Exception: pass
                 return
-            bot.send_message(msg.chat.id, "📋 Файл принят. Что необходимо сделать с базой данных?", reply_markup=import_keyboard(msg.document.file_id))
+                
+            bot.send_message(msg.chat.id, "📋 Файл успешно загружен. Что необходимо сделать с базой данных?", reply_markup=import_keyboard())
         except Exception as e:
             bot.send_message(msg.chat.id, f"❌ Не удалось прочитать файл: {str(e)}")
+            try: os.remove(IMPORT_FILE_PATH)
+            except Exception: pass
     else:
         bot.send_message(msg.chat.id, "❌ Бот принимает файлы базы только в формате .csv")
 
