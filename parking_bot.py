@@ -16,7 +16,6 @@ user_states = {}
 DB_PATH = '/app/data/parking.db'
 
 def init_db():
-    # Проверяем, существует ли папка /app/data, если нет — создаем ее
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     c = sqlite3.connect(DB_PATH)
     cur = c.cursor()
@@ -68,10 +67,10 @@ def send_welcome(msg):
 def callback_inline(call):
     if not is_admin(call.from_user.id): return
     data = call.data.split('|')
-    act = data
+    act = data[0]
 
     if act == "y":
-        p, ph, apt, r_id = data, data, data, int(data)
+        p, ph, apt, r_id = data[1], data[2], data[3], int(data[4])
         try:
             c = sqlite3.connect(DB_PATH)
             cur = c.cursor()
@@ -83,12 +82,12 @@ def callback_inline(call):
         except sqlite3.IntegrityError:
             bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=f"⚠️ {p} уже есть в базе.")
     elif act == "n":
-        r_id = int(data)
+        r_id = int(data[1])
         bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="❌ Заявка отклонена.")
         bot.send_message(r_id, "⚠️ Ваша заявка на парковку была отклонена.")
 
     elif act in ["imp_clear", "imp_append"]:
-        file_id = data
+        file_id = data[1]
         bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="⏳ Начинаю импорт данных...")
         try:
             file_info = bot.get_file(file_id)
@@ -137,6 +136,7 @@ def callback_inline(call):
             bot.send_message(call.message.chat.id, msg_text, parse_mode='Markdown', reply_markup=admin_menu())
         except Exception as e:
             bot.send_message(call.message.chat.id, f"❌ Ошибка обработки: {str(e)}")
+
 
 
 @bot.message_handler(content_types=['document'])
@@ -240,18 +240,28 @@ def handle_text(msg):
             res = cur.fetchone()
             if res:
                 c.close()
-                bot.send_message(msg.chat.id, f"🟢 РАЗРЕШЕН\n🚗 Авто: {val}\n📱 Тел: {res}\n🏢 Кв: {res}", reply_markup=admin_menu())
+                phone_val, apt_val = res
+                bot.send_message(
+                    msg.chat.id, 
+                    f"🟢 **ДОСТУП РАЗРЕШЕН**\n\n"
+                    f"🚗 Авто: {val}\n"
+                    f"📱 Тел: {phone_val}\n"
+                    f"🏢 Кв: {apt_val}", 
+                    reply_markup=admin_menu(),
+                    parse_mode='Markdown'
+                )
             else:
                 cur.execute("SELECT plate_number, phone_number FROM residents WHERE apartment_number = ?", (txt,))
                 res_apt = cur.fetchall()
                 c.close()
                 if res_apt:
-                    resp = f"🏢 Автомобили квартиры №{txt}:\n\n"
+                    resp = f"🏢 **Автомобили квартиры №{txt}:**\n\n"
                     for row in res_apt:
-                        resp += f"🚗: {row} | 📱: {row}\n"
-                    bot.send_message(msg.chat.id, resp, reply_markup=admin_menu())
+                        p_row, ph_row = row
+                        resp += f"🚗 Авто: `{p_row}` | 📱 Тел: {ph_row}\n"
+                    bot.send_message(msg.chat.id, resp, reply_markup=admin_menu(), parse_mode='Markdown')
                 else:
-                    bot.send_message(msg.chat.id, "🔴 НЕ НАЙДЕНО", reply_markup=admin_menu())
+                    bot.send_message(msg.chat.id, "🔴 **ДОСТУП ЗАПРЕЩЕН / НЕ НАЙДЕНО**", reply_markup=admin_menu(), parse_mode='Markdown')
         elif step == 'del_p':
             p = txt.upper()
             user_states.pop(uid, None)
