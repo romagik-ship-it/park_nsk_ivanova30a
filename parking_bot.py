@@ -81,7 +81,6 @@ def callback_inline(call):
         r_id = int(data[1])
         bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="❌ Заявка отклонена.")
         bot.send_message(r_id, "⚠️ Ваша заявка на парковку была отклонена.")
-
     elif act in ["imp_clear", "imp_append"]:
         file_id = data[1]
         bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="⏳ Начинаю импорт данных...")
@@ -91,38 +90,54 @@ def callback_inline(call):
             temp_filename = f"import_{call.from_user.id}.xlsx"
             with open(temp_filename, 'wb') as f:
                 f.write(downloaded_file)
-            df = pd.read_excel(temp_filename)
+            
+            # Читаем файл, принудительно преобразуя все колонки в текст, чтобы не было сбоев типов данных
+            df = pd.read_excel(temp_filename, dtype=str)
             os.remove(temp_filename)
+            
             c = sqlite3.connect('parking.db')
             cur = c.cursor()
             if act == "imp_clear":
                 cur.execute("DELETE FROM residents")
+            
             added_count = 0
             errors_count = 0
+            
             for _, row in df.iterrows():
+                # Защита от пустых или сломанных ячеек
                 plate = str(row.get("Номер", "")).strip().upper()
                 phone = str(row.get("Телефон", "")).strip()
                 apt = str(row.get("Квартира", "")).strip()
-                if not plate or plate == "NAN" or plate == "":
+                
+                # Если ячейка была пустой в Excel, pandas вернет строку 'nan'
+                if plate == 'NAN' or not plate:
                     continue
-                if phone == "NAN": phone = ""
-                if apt == "NAN": apt = ""
+                if phone == 'NAN': phone = ""
+                if apt == 'NAN': apt = ""
+                
+                # Убираем возможную точку в конце номеров квартир, если Excel превратил их в дробь (например, "45.0")
+                if apt.endswith('.0'): apt = apt[:-2]
+                
                 try:
                     cur.execute("INSERT INTO residents (plate_number, phone_number, apartment_number) VALUES (?, ?, ?)", (plate, phone, apt))
                     added_count += 1
                 except sqlite3.IntegrityError:
                     errors_count += 1
+            
             c.commit()
             c.close()
+            
             msg_text = f"📊 **Импорт успешно выполнен!**\n\n"
             if act == "imp_clear":
                 msg_text += "🔄 База была полностью очищена перед записью.\n"
             msg_text += f"✅ Записано автомобилей: {added_count}\n"
             if act == "imp_append":
-                msg_text += f"⚠️ Пропущено дубликатов: {errors_count}"
+                msg_text += f"⚠️ Пропущено дубликатов (уже были в базе): {errors_count}"
             bot.send_message(call.message.chat.id, msg_text, parse_mode='Markdown', reply_markup=admin_menu())
-        except Exception:
-            bot.send_message(call.message.chat.id, "❌ Произошла ошибка во время обработки файла. Проверьте формат.")
+        except Exception as e:
+            # Если всё же упадет — бот напишет точную причину ошибки вместо общей фразы
+            bot.send_message(call.message.chat.id, f"❌ Ошибка обработки: {str(e)}")
+
 
 
 @bot.message_handler(content_types=['document'])
