@@ -39,6 +39,14 @@ def approve_keyboard(p, ph, apt, uid):
     m.add(types.InlineKeyboardButton("✅ Одобрить", callback_data=f"y|{p}|{ph}|{apt}|{uid}"), types.InlineKeyboardButton("❌ Отклонить", callback_data=f"n|{uid}"))
     return m
 
+def import_keyboard(file_id):
+    m = types.InlineKeyboardMarkup()
+    m.add(
+        types.InlineKeyboardButton("🔄 Обнулить базу и записать", callback_data=f"imp_clear|{file_id}"),
+        types.InlineKeyboardButton("➕ Добавить новые записи", callback_data=f"imp_append|{file_id}")
+    )
+    return m
+
 def is_admin(uid):
     return uid in A
 
@@ -47,7 +55,7 @@ def send_welcome(msg):
     uid = msg.from_user.id
     user_states.pop(uid, None)
     if is_admin(uid):
-        bot.send_message(msg.chat.id, "⚙️ Панель управления парковкой:", reply_markup=admin_menu())
+        bot.send_message(msg.chat.id, "⚙️ Панель управления парковкой.\nВы можете прислать Excel-файл для загрузки.", reply_markup=admin_menu())
     else:
         bot.send_message(msg.chat.id, "👋 Бот регистрации транспорта жильцов:", reply_markup=resident_menu())
 
@@ -73,6 +81,72 @@ def callback_inline(call):
         r_id = int(data[1])
         bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="❌ Заявка отклонена.")
         bot.send_message(r_id, "⚠️ Ваша заявка на парковку была отклонена.")
+
+    elif act in ["imp_clear", "imp_append"]:
+        file_id = data[1]
+        bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="⏳ Начинаю импорт данных...")
+        try:
+            file_info = bot.get_file(file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            temp_filename = f"import_{call.from_user.id}.xlsx"
+            with open(temp_filename, 'wb') as f:
+                f.write(downloaded_file)
+            df = pd.read_excel(temp_filename)
+            os.remove(temp_filename)
+            c = sqlite3.connect('parking.db')
+            cur = c.cursor()
+            if act == "imp_clear":
+                cur.execute("DELETE FROM residents")
+            added_count = 0
+            errors_count = 0
+            for _, row in df.iterrows():
+                plate = str(row.get("Номер", "")).strip().upper()
+                phone = str(row.get("Телефон", "")).strip()
+                apt = str(row.get("Квартира", "")).strip()
+                if not plate or plate == "NAN" or plate == "":
+                    continue
+                if phone == "NAN": phone = ""
+                if apt == "NAN": apt = ""
+                try:
+                    cur.execute("INSERT INTO residents (plate_number, phone_number, apartment_number) VALUES (?, ?, ?)", (plate, phone, apt))
+                    added_count += 1
+                except sqlite3.IntegrityError:
+                    errors_count += 1
+            c.commit()
+            c.close()
+            msg_text = f"📊 **Импорт успешно выполнен!**\n\n"
+            if act == "imp_clear":
+                msg_text += "🔄 База была полностью очищена перед записью.\n"
+            msg_text += f"✅ Записано автомобилей: {added_count}\n"
+            if act == "imp_append":
+                msg_text += f"⚠️ Пропущено дубликатов: {errors_count}"
+            bot.send_message(call.message.chat.id, msg_text, parse_mode='Markdown', reply_markup=admin_menu())
+        except Exception:
+            bot.send_message(call.message.chat.id, "❌ Произошла ошибка во время обработки файла. Проверьте формат.")
+
+
+@bot.message_handler(content_types=['document'])
+def handle_document(msg):
+    uid = msg.from_user.id
+    if not is_admin(uid): return
+    if msg.document.file_name.endswith('.xlsx'):
+        try:
+            file_info = bot.get_file(msg.document.file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            temp_check = f"check_{uid}.xlsx"
+            with open(temp_check, 'wb') as f:
+                f.write(downloaded_file)
+            df = pd.read_excel(temp_check)
+            os.remove(temp_check)
+            required_cols = ["Номер", "Телефон", "Квартира"]
+            if not all(col in df.columns for col in required_cols):
+                bot.send_message(msg.chat.id, "❌ В файле должны быть колонки: 'Номер', 'Телефон', 'Квартира'.")
+                return
+            bot.send_message(msg.chat.id, "📋 Файл принят. Что необходимо сделать с базой данных?", reply_markup=import_keyboard(msg.document.file_id))
+        except Exception:
+            bot.send_message(msg.chat.id, "❌ Не удалось прочитать файл.")
+    else:
+        bot.send_message(msg.chat.id, "❌ Бот принимает только файлы формата .xlsx (Excel).")
 
 @bot.message_handler(content_types=['text'])
 def handle_text(msg):
@@ -127,7 +201,7 @@ def handle_text(msg):
     if txt == "📊 Выгрузить в Excel":
         try:
             c = sqlite3.connect('parking.db')
-            df = pd.read_sql_query("SELECT id, plate_number, phone_number, apartment_number FROM residents", c)
+            df = pd.read_sql_query("SELECT id AS '№', plate_number AS 'Номер', phone_number AS 'Телефон', apartment_number AS 'Квартира' FROM residents", c)
             c.close()
             if df.empty:
                 bot.send_message(msg.chat.id, "📭 База пуста.")
