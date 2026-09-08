@@ -12,11 +12,12 @@ A = [int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
 bot = telebot.TeleBot(T)
 user_states = {}
 
-# Путь к базе данных в защищенной папке BotHost
-DB_PATH = '/app/data/parking.db'
+# Настройка пути строго по инструкции BotHost
+DATA_DIR = os.getenv('DATA_DIR', '/app/data')
+DB_PATH = os.path.join(DATA_DIR, 'parking.db')
 
 def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
     c = sqlite3.connect(DB_PATH)
     cur = c.cursor()
     cur.execute('''CREATE TABLE IF NOT EXISTS residents (id INTEGER PRIMARY KEY AUTOINCREMENT, plate_number TEXT UNIQUE, phone_number TEXT, apartment_number TEXT)''')
@@ -92,11 +93,10 @@ def callback_inline(call):
         try:
             file_info = bot.get_file(file_id)
             downloaded_file = bot.download_file(file_info.file_path)
-            temp_filename = f"import_{call.from_user.id}.csv"
+            temp_filename = os.path.join(DATA_DIR, f"import_{call.from_user.id}.csv")
             with open(temp_filename, 'wb') as f:
                 f.write(downloaded_file)
             
-            # Читаем текстовый CSV (кодировка utf-8-sig идеальна для русского Excel)
             df = pd.read_csv(temp_filename, dtype=str, encoding='utf-8-sig')
             os.remove(temp_filename)
             
@@ -141,18 +141,16 @@ def callback_inline(call):
 def handle_document(msg):
     uid = msg.from_user.id
     if not is_admin(uid): return
-    # Бот теперь ждет только .csv файлы
     if msg.document.file_name.endswith('.csv'):
         try:
             file_info = bot.get_file(msg.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
-            temp_check = f"check_{uid}.csv"
+            temp_check = os.path.join(DATA_DIR, f"check_{uid}.csv")
             with open(temp_check, 'wb') as f:
                 f.write(downloaded_file)
             df = pd.read_csv(temp_check, encoding='utf-8-sig')
             os.remove(temp_check)
             
-            # Приводим заголовки к единому виду
             df.columns = [str(c).strip().capitalize() for c in df.columns]
             required_cols = ["Номер", "Телефон", "Квартира"]
             
@@ -224,8 +222,7 @@ def handle_text(msg):
                 bot.send_message(msg.chat.id, "📭 База пуста.")
                 return
             
-            # Сохраняем в текстовый CSV, понятный Excel
-            file_name = "parking_base.csv"
+            file_name = os.path.join(DATA_DIR, "parking_base.csv")
             df.to_csv(file_name, index=False, encoding='utf-8-sig')
             with open(file_name, 'rb') as doc:
                 bot.send_document(msg.chat.id, doc, caption="📊 База данных парковки.")
@@ -301,3 +298,4 @@ def handle_text(msg):
 if __name__ == '__main__':
     init_db()
     bot.polling(none_stop=True)
+
