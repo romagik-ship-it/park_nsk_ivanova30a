@@ -25,7 +25,7 @@ def init_db():
 
 def admin_menu():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    m.add(types.KeyboardButton("🔍 Проверить доступ"), types.KeyboardButton("➕ Добавить вручную"), types.KeyboardButton("🗑️ Удалить машину"), types.KeyboardButton("📊 Выгрузить в Excel"))
+    m.add(types.KeyboardButton("🔍 Проверить доступ"), types.KeyboardButton("➕ Добавить вручную"), types.KeyboardButton("🗑️ Удалить машину"), types.KeyboardButton("📊 Выгрузить базу"))
     return m
 
 def resident_menu():
@@ -59,7 +59,7 @@ def send_welcome(msg):
     uid = msg.from_user.id
     user_states.pop(uid, None)
     if is_admin(uid):
-        bot.send_message(msg.chat.id, "⚙️ Панель управления парковкой.\nВы можете прислать Excel-файл для загрузки.", reply_markup=admin_menu())
+        bot.send_message(msg.chat.id, "⚙️ Панель управления парковкой.\nВы можете прислать CSV-файл для загрузки.", reply_markup=admin_menu())
     else:
         bot.send_message(msg.chat.id, "👋 Бот регистрации транспорта жильцов:", reply_markup=resident_menu())
 
@@ -67,10 +67,10 @@ def send_welcome(msg):
 def callback_inline(call):
     if not is_admin(call.from_user.id): return
     data = call.data.split('|')
-    act = data[0]
+    act = data
 
     if act == "y":
-        p, ph, apt, r_id = data[1], data[2], data[3], int(data[4])
+        p, ph, apt, r_id = data, data, data, int(data)
         try:
             c = sqlite3.connect(DB_PATH)
             cur = c.cursor()
@@ -82,21 +82,22 @@ def callback_inline(call):
         except sqlite3.IntegrityError:
             bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=f"⚠️ {p} уже есть в базе.")
     elif act == "n":
-        r_id = int(data[1])
+        r_id = int(data)
         bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="❌ Заявка отклонена.")
         bot.send_message(r_id, "⚠️ Ваша заявка на парковку была отклонена.")
 
     elif act in ["imp_clear", "imp_append"]:
-        file_id = data[1]
+        file_id = data
         bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="⏳ Начинаю импорт данных...")
         try:
             file_info = bot.get_file(file_id)
             downloaded_file = bot.download_file(file_info.file_path)
-            temp_filename = f"import_{call.from_user.id}.xlsx"
+            temp_filename = f"import_{call.from_user.id}.csv"
             with open(temp_filename, 'wb') as f:
                 f.write(downloaded_file)
             
-            df = pd.read_excel(temp_filename, dtype=str)
+            # Читаем текстовый CSV (кодировка utf-8-sig идеальна для русского Excel)
+            df = pd.read_csv(temp_filename, dtype=str, encoding='utf-8-sig')
             os.remove(temp_filename)
             
             c = sqlite3.connect(DB_PATH)
@@ -116,7 +117,6 @@ def callback_inline(call):
                     continue
                 if phone == "NAN": phone = ""
                 if apt == "NAN": apt = ""
-                if apt.endswith('.0'): apt = apt[:-2]
                 
                 try:
                     cur.execute("INSERT INTO residents (plate_number, phone_number, apartment_number) VALUES (?, ?, ?)", (plate, phone, apt))
@@ -137,30 +137,33 @@ def callback_inline(call):
         except Exception as e:
             bot.send_message(call.message.chat.id, f"❌ Ошибка обработки: {str(e)}")
 
-
-
 @bot.message_handler(content_types=['document'])
 def handle_document(msg):
     uid = msg.from_user.id
     if not is_admin(uid): return
-    if msg.document.file_name.endswith('.xlsx'):
+    # Бот теперь ждет только .csv файлы
+    if msg.document.file_name.endswith('.csv'):
         try:
             file_info = bot.get_file(msg.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
-            temp_check = f"check_{uid}.xlsx"
+            temp_check = f"check_{uid}.csv"
             with open(temp_check, 'wb') as f:
                 f.write(downloaded_file)
-            df = pd.read_excel(temp_check)
+            df = pd.read_csv(temp_check, encoding='utf-8-sig')
             os.remove(temp_check)
+            
+            # Приводим заголовки к единому виду
+            df.columns = [str(c).strip().capitalize() for c in df.columns]
             required_cols = ["Номер", "Телефон", "Квартира"]
+            
             if not all(col in df.columns for col in required_cols):
                 bot.send_message(msg.chat.id, "❌ В файле должны быть колонки: 'Номер', 'Телефон', 'Квартира'.")
                 return
             bot.send_message(msg.chat.id, "📋 Файл принят. Что необходимо сделать с базой данных?", reply_markup=import_keyboard(msg.document.file_id))
-        except Exception:
-            bot.send_message(msg.chat.id, "❌ Не удалось прочитать файл.")
+        except Exception as e:
+            bot.send_message(msg.chat.id, f"❌ Не удалось прочитать файл: {str(e)}")
     else:
-        bot.send_message(msg.chat.id, "❌ Бот принимает только файлы формата .xlsx (Excel).")
+        bot.send_message(msg.chat.id, "❌ Бот принимает файлы базы только в формате .csv")
 
 @bot.message_handler(content_types=['text'])
 def handle_text(msg):
@@ -212,7 +215,7 @@ def handle_text(msg):
         user_states[uid] = {'step': 'del_p'}
         bot.send_message(msg.chat.id, "Введите гос. номер для удаления:", reply_markup=cancel_menu())
         return
-    if txt == "📊 Выгрузить в Excel":
+    if txt == "📊 Выгрузить базу":
         try:
             c = sqlite3.connect(DB_PATH)
             df = pd.read_sql_query("SELECT id AS '№', plate_number AS 'Номер', phone_number AS 'Телефон', apartment_number AS 'Квартира' FROM residents", c)
@@ -220,12 +223,15 @@ def handle_text(msg):
             if df.empty:
                 bot.send_message(msg.chat.id, "📭 База пуста.")
                 return
-            df.to_excel("parking.xlsx", index=False)
-            with open("parking.xlsx", 'rb') as doc:
-                bot.send_document(msg.chat.id, doc, caption="📊 База.")
-            os.remove("parking.xlsx")
-        except Exception:
-            bot.send_message(msg.chat.id, "❌ Ошибка Excel.")
+            
+            # Сохраняем в текстовый CSV, понятный Excel
+            file_name = "parking_base.csv"
+            df.to_csv(file_name, index=False, encoding='utf-8-sig')
+            with open(file_name, 'rb') as doc:
+                bot.send_document(msg.chat.id, doc, caption="📊 База данных парковки.")
+            os.remove(file_name)
+        except Exception as e:
+            bot.send_message(msg.chat.id, f"❌ Ошибка выгрузки: {str(e)}")
         return
 
     st = user_states.get(uid)
@@ -295,4 +301,3 @@ def handle_text(msg):
 if __name__ == '__main__':
     init_db()
     bot.polling(none_stop=True)
-
