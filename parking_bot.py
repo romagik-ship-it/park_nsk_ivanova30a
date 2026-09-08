@@ -12,8 +12,13 @@ A = [int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
 bot = telebot.TeleBot(T)
 user_states = {}
 
+# Путь к базе данных в защищенной папке BotHost
+DB_PATH = '/app/data/parking.db'
+
 def init_db():
-    c = sqlite3.connect('parking.db')
+    # Проверяем, существует ли папка /app/data, если нет — создаем ее
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    c = sqlite3.connect(DB_PATH)
     cur = c.cursor()
     cur.execute('''CREATE TABLE IF NOT EXISTS residents (id INTEGER PRIMARY KEY AUTOINCREMENT, plate_number TEXT UNIQUE, phone_number TEXT, apartment_number TEXT)''')
     c.commit()
@@ -63,12 +68,12 @@ def send_welcome(msg):
 def callback_inline(call):
     if not is_admin(call.from_user.id): return
     data = call.data.split('|')
-    act = data[0]
+    act = data
 
     if act == "y":
-        p, ph, apt, r_id = data[1], data[2], data[3], int(data[4])
+        p, ph, apt, r_id = data, data, data, int(data)
         try:
-            c = sqlite3.connect('parking.db')
+            c = sqlite3.connect(DB_PATH)
             cur = c.cursor()
             cur.execute("INSERT INTO residents (plate_number, phone_number, apartment_number) VALUES (?, ?, ?)", (p, ph, apt))
             c.commit()
@@ -78,11 +83,12 @@ def callback_inline(call):
         except sqlite3.IntegrityError:
             bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=f"⚠️ {p} уже есть в базе.")
     elif act == "n":
-        r_id = int(data[1])
+        r_id = int(data)
         bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="❌ Заявка отклонена.")
         bot.send_message(r_id, "⚠️ Ваша заявка на парковку была отклонена.")
+
     elif act in ["imp_clear", "imp_append"]:
-        file_id = data[1]
+        file_id = data
         bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="⏳ Начинаю импорт данных...")
         try:
             file_info = bot.get_file(file_id)
@@ -91,11 +97,10 @@ def callback_inline(call):
             with open(temp_filename, 'wb') as f:
                 f.write(downloaded_file)
             
-            # Читаем файл, принудительно преобразуя все колонки в текст, чтобы не было сбоев типов данных
             df = pd.read_excel(temp_filename, dtype=str)
             os.remove(temp_filename)
             
-            c = sqlite3.connect('parking.db')
+            c = sqlite3.connect(DB_PATH)
             cur = c.cursor()
             if act == "imp_clear":
                 cur.execute("DELETE FROM residents")
@@ -104,18 +109,14 @@ def callback_inline(call):
             errors_count = 0
             
             for _, row in df.iterrows():
-                # Защита от пустых или сломанных ячеек
                 plate = str(row.get("Номер", "")).strip().upper()
                 phone = str(row.get("Телефон", "")).strip()
                 apt = str(row.get("Квартира", "")).strip()
                 
-                # Если ячейка была пустой в Excel, pandas вернет строку 'nan'
-                if plate == 'NAN' or not plate:
+                if not plate or plate == "NAN" or plate == "":
                     continue
-                if phone == 'NAN': phone = ""
-                if apt == 'NAN': apt = ""
-                
-                # Убираем возможную точку в конце номеров квартир, если Excel превратил их в дробь (например, "45.0")
+                if phone == "NAN": phone = ""
+                if apt == "NAN": apt = ""
                 if apt.endswith('.0'): apt = apt[:-2]
                 
                 try:
@@ -135,9 +136,7 @@ def callback_inline(call):
                 msg_text += f"⚠️ Пропущено дубликатов (уже были в базе): {errors_count}"
             bot.send_message(call.message.chat.id, msg_text, parse_mode='Markdown', reply_markup=admin_menu())
         except Exception as e:
-            # Если всё же упадет — бот напишет точную причину ошибки вместо общей фразы
             bot.send_message(call.message.chat.id, f"❌ Ошибка обработки: {str(e)}")
-
 
 
 @bot.message_handler(content_types=['document'])
@@ -215,7 +214,7 @@ def handle_text(msg):
         return
     if txt == "📊 Выгрузить в Excel":
         try:
-            c = sqlite3.connect('parking.db')
+            c = sqlite3.connect(DB_PATH)
             df = pd.read_sql_query("SELECT id AS '№', plate_number AS 'Номер', phone_number AS 'Телефон', apartment_number AS 'Квартира' FROM residents", c)
             c.close()
             if df.empty:
@@ -235,13 +234,13 @@ def handle_text(msg):
         if step == 'chk_p':
             val = txt.upper()
             user_states.pop(uid, None)
-            c = sqlite3.connect('parking.db')
+            c = sqlite3.connect(DB_PATH)
             cur = c.cursor()
             cur.execute("SELECT phone_number, apartment_number FROM residents WHERE plate_number = ?", (val,))
             res = cur.fetchone()
             if res:
                 c.close()
-                bot.send_message(msg.chat.id, f"🟢 РАЗРЕШЕН\n🚗 Авто: {val}\n📱 Тел: {res[0]}\n🏢 Кв: {res[1]}", reply_markup=admin_menu())
+                bot.send_message(msg.chat.id, f"🟢 РАЗРЕШЕН\n🚗 Авто: {val}\n📱 Тел: {res}\n🏢 Кв: {res}", reply_markup=admin_menu())
             else:
                 cur.execute("SELECT plate_number, phone_number FROM residents WHERE apartment_number = ?", (txt,))
                 res_apt = cur.fetchall()
@@ -249,14 +248,14 @@ def handle_text(msg):
                 if res_apt:
                     resp = f"🏢 Автомобили квартиры №{txt}:\n\n"
                     for row in res_apt:
-                        resp += f"🚗: {row[0]} | 📱: {row[1]}\n"
+                        resp += f"🚗: {row} | 📱: {row}\n"
                     bot.send_message(msg.chat.id, resp, reply_markup=admin_menu())
                 else:
                     bot.send_message(msg.chat.id, "🔴 НЕ НАЙДЕНО", reply_markup=admin_menu())
         elif step == 'del_p':
             p = txt.upper()
             user_states.pop(uid, None)
-            c = sqlite3.connect('parking.db')
+            c = sqlite3.connect(DB_PATH)
             cur = c.cursor()
             cur.execute("DELETE FROM residents WHERE plate_number = ?", (p,))
             c.commit()
@@ -274,7 +273,7 @@ def handle_text(msg):
             p, ph, apt = st['p'], st['ph'], txt
             user_states.pop(uid, None)
             try:
-                c = sqlite3.connect('parking.db')
+                c = sqlite3.connect(DB_PATH)
                 cur = c.cursor()
                 cur.execute("INSERT INTO residents (plate_number, phone_number, apartment_number) VALUES (?, ?, ?)", (p, ph, apt))
                 c.commit()
@@ -286,3 +285,4 @@ def handle_text(msg):
 if __name__ == '__main__':
     init_db()
     bot.polling(none_stop=True)
+
